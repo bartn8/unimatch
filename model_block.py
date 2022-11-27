@@ -31,6 +31,7 @@ class UniblockStereoParams:
 
         self.padding_factor = 32
         self.inference_size = [1024,1536]
+        #self.inference_size = None
 
     def get_model_dict(self):
         return {
@@ -76,7 +77,15 @@ class UnimatchBlock:
             return
 
         self.log(f"Building Model...")
-        self.model = unimatch.UniMatch(**self.model_params.get_model_dict()).to(self.device)
+        #self.model = unimatch.UniMatch(**self.model_params.get_model_dict())
+        self.model = unimatch.UniMatch(feature_channels=self.model_params.feature_channels,
+                     num_scales=self.model_params.num_scales,
+                     upsample_factor=self.model_params.upsample_factor,
+                     num_head=self.model_params.num_head,
+                     ffn_dim_expansion=self.model_params.ffn_dim_expansion,
+                     num_transformer_layers=self.model_params.num_transformer_layers,
+                     reg_refine=self.model_params.reg_refine,
+                     task=self.model_params.task)
         self.model = torch.nn.DataParallel(self.model).to(self.device)
 
     def load(self, model_path):
@@ -104,7 +113,7 @@ class UnimatchBlock:
 
         #ToTensor
         img = np.transpose(img, (2, 0, 1))  # [3, H, W]
-        img = torch.from_numpy(img) / 255
+        img = torch.from_numpy(img) / 255.
 
         #Normalize
         for t, m, s in zip(img, IMAGENET_MEAN, IMAGENET_STD):
@@ -112,35 +121,49 @@ class UnimatchBlock:
         
         return img.unsqueeze(0).to(self.device)#[1,3,H,W]
 
+    @torch.no_grad()
     def test(self, left_vpp, right_vpp):
+        self.model.eval()
         #Input conversion
         left_vpp = self._conv_image(left_vpp)
         right_vpp = self._conv_image(right_vpp)
 
-        if self.model_params.inference_size is not None:
-            ori_size = left_vpp.shape[-2:]
+        inference_size = self.model_params.inference_size
+        padding_factor = self.model_params.padding_factor
 
-            left_vpp = F.interpolate(left_vpp, size=self.model_params.inference_size,
+        nearest_size = [int(np.ceil(left_vpp.size(-2) / padding_factor)) * padding_factor,
+                        int(np.ceil(left_vpp.size(-1) / padding_factor)) * padding_factor]
+
+        inference_size = nearest_size if inference_size is None else inference_size
+
+        ori_size = left_vpp.shape[-2:]
+        if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
+            self.log(f"Image resized to {inference_size}")
+
+            left_vpp = F.interpolate(left_vpp, size=inference_size,
                                  mode='bilinear',
                                  align_corners=True)
-            right_vpp = F.interpolate(right_vpp, size=self.model_params.inference_size,
+            right_vpp = F.interpolate(right_vpp, size=inference_size,
                                   mode='bilinear',
                                   align_corners=True)
-        else:
-            padder = utils.InputPadder(left_vpp.shape, padding_factor=self.model_params.padding_factor)
-            left_vpp, right_vpp  = padder.pad(left_vpp, right_vpp)
-
-        self.model.eval()
+        
         with torch.no_grad():
-            pred_disp = self.model(**self.model_params.get_eval_dict(left_vpp, right_vpp))['flow_preds'][-1]  # [1, H, W]
+            #pred_disp = self.model(**self.model_params.get_eval_dict(left_vpp, right_vpp))['flow_preds'][-1]  # [1, H, W]
 
-            # remove padding
-            if self.model_params.inference_size is None:
-                pred_disp = padder.unpad(pred_disp)[0]  # [H, W]
-            else:
-                # resize back
-                pred_disp = F.interpolate(pred_disp.unsqueeze(1), size=ori_size, mode='bilinear',
-                                        align_corners=True).squeeze(1)[0]  # [H, W]
-                pred_disp = pred_disp * ori_size[-1] / float(self.model_params.inference_size[-1])
+            pred_disp = self.model(left_vpp, right_vpp,
+                              attn_type=self.model_params.attn_type,
+                              attn_splits_list=self.model_params.attn_splits_list,
+                              corr_radius_list=self.model_params.corr_radius_list,
+                              prop_radius_list=self.model_params.prop_radius_list,
+                              num_reg_refine=self.model_params.num_reg_refine,
+                              task='stereo',
+                              )['flow_preds'][-1]  # [1, H, W]
 
-            return pred_disp.cpu().numpy().squeeze()
+        if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
+            # resize back
+            pred_disp = F.interpolate(pred_disp.unsqueeze(1), size=ori_size,
+                                    mode='bilinear',
+                                    align_corners=True).squeeze(1)  # [1, H, W]
+            pred_disp = pred_disp * ori_size[-1] / float(inference_size[-1])
+
+        return pred_disp[0].cpu().numpy()
