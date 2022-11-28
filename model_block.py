@@ -85,8 +85,9 @@ class UnimatchBlock:
                      ffn_dim_expansion=self.model_params.ffn_dim_expansion,
                      num_transformer_layers=self.model_params.num_transformer_layers,
                      reg_refine=self.model_params.reg_refine,
-                     task=self.model_params.task)
-        self.model = torch.nn.DataParallel(self.model).to(self.device)
+                     task=self.model_params.task).to(self.device)
+        
+        #self.model = torch.nn.DataParallel(self.model).to(self.device)
 
     def load(self, model_path):
         # load the checkpoint file specified by model_path.loadckpt

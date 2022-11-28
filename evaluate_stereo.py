@@ -727,6 +727,8 @@ def inference_stereo(model,
                      ):
     model.eval()
 
+    print((padding_factor,inference_size,attn_type,attn_splits_list,corr_radius_list,prop_radius_list,num_reg_refine))
+
     val_transform_list = [transforms.ToTensor(),
                           transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                           ]
@@ -777,6 +779,9 @@ def inference_stereo(model,
 
         # resize to nearest size or specified size
         inference_size = nearest_size if fixed_inference_size is None else fixed_inference_size
+        print(f"Image resized to {inference_size}")
+        print(f"left min max: {np.min(left.cpu().numpy())} {np.max(left.cpu().numpy())}")
+        print(f"right min max: {np.min(right.cpu().numpy())} {np.max(right.cpu().numpy())}")
 
         ori_size = left.shape[-2:]
         if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
@@ -818,6 +823,8 @@ def inference_stereo(model,
             pred_disp = hflip(pred_disp)
 
         disp = pred_disp[0].cpu().numpy()
+
+        print(f"Min: {np.min(disp)}, Max: {np.max(disp)}")
 
         if save_pfm_disp:
             save_name_pfm = save_name[:-4] + '.pfm'

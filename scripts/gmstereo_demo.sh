@@ -15,8 +15,8 @@ CUDA_VISIBLE_DEVICES=0 python main_stereo.py \
 --corr_radius_list -1 4 \
 --prop_radius_list -1 1 \
 --reg_refine \
---num_reg_refine 3
-
+--num_reg_refine 3 \
+--debug
 # optionally predict both left and right disparities
 #--pred_bidir_disp
 
