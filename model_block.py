@@ -14,7 +14,7 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 class UniblockStereoParams:
-    def __init__(self) -> None:
+    def __init__(self, inference_size = [1024,1536]) -> None:
         self.feature_channels = 128
         self.num_scales = 2
         self.task = "stereo"
@@ -31,8 +31,8 @@ class UniblockStereoParams:
         self.num_reg_refine = 3
 
         self.padding_factor = 32
-        self.inference_size = [1024,1536]
-        #self.inference_size = None
+        #self.inference_size = [1024,1536]
+        self.inference_size = inference_size
 
     def get_model_dict(self):
         return {
@@ -60,12 +60,12 @@ class UniblockStereoParams:
 
 class UnimatchBlock:
 
-    def __init__(self, device = "cpu", verbose=False):
+    def __init__(self, inference_size = [1024, 1536], device = "cpu", verbose=False):
         self.logName = "Unimatch Block"
         self.verbose = verbose
         self.device = device
         self.disposed = False
-        self.model_params = UniblockStereoParams()
+        self.model_params = UniblockStereoParams(inference_size)
         
 
     def log(self, x):
@@ -133,22 +133,26 @@ class UnimatchBlock:
 
         inference_size = self.model_params.inference_size
         padding_factor = self.model_params.padding_factor
+            
+        #Padding or resize
+        if inference_size is None:
+            h,w = left_vpp.shape[-2:]
+            pad_ht = (((h // padding_factor) + 1) * padding_factor - h) % 32
+            pad_wd = (((w // padding_factor) + 1) * padding_factor - w) % 32
+            _pad = [pad_wd//2, pad_wd - pad_wd//2, pad_ht//2, pad_ht - pad_ht//2]
+            left_vpp = F.pad(left_vpp, _pad, mode="replicate")
+            right_vpp = F.pad(right_vpp, _pad, mode="replicate")
+        else:
+            ori_size = left_vpp.shape[-2:]
+            if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
+                self.log(f"Image resized to {inference_size}")
 
-        nearest_size = [int(np.ceil(left_vpp.size(-2) / padding_factor)) * padding_factor,
-                        int(np.ceil(left_vpp.size(-1) / padding_factor)) * padding_factor]
-
-        inference_size = nearest_size if inference_size is None else inference_size
-
-        ori_size = left_vpp.shape[-2:]
-        if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
-            self.log(f"Image resized to {inference_size}")
-
-            left_vpp = F.interpolate(left_vpp, size=inference_size,
-                                 mode='bilinear',
-                                 align_corners=True)
-            right_vpp = F.interpolate(right_vpp, size=inference_size,
-                                  mode='bilinear',
-                                  align_corners=True)
+                left_vpp = F.interpolate(left_vpp, size=inference_size,
+                                    mode='bilinear',
+                                    align_corners=True)
+                right_vpp = F.interpolate(right_vpp, size=inference_size,
+                                    mode='bilinear',
+                                    align_corners=True)
         
         with torch.no_grad():
             #pred_disp = self.model(**self.model_params.get_eval_dict(left_vpp, right_vpp))['flow_preds'][-1]  # [1, H, W]
@@ -162,11 +166,16 @@ class UnimatchBlock:
                               task='stereo',
                               )['flow_preds'][-1]  # [1, H, W]
 
-        if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
-            # resize back
-            pred_disp = F.interpolate(pred_disp.unsqueeze(1), size=ori_size,
-                                    mode='bilinear',
-                                    align_corners=True).squeeze(1)  # [1, H, W]
-            pred_disp = pred_disp * ori_size[-1] / float(inference_size[-1])
+        if inference_size is None:
+            ht, wd = pred_disp.shape[-2:]
+            c = [_pad[2], ht-_pad[3], _pad[0], wd-_pad[1]]
+            pred_disp = pred_disp[..., c[0]:c[1], c[2]:c[3]]
+        else:
+            if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
+                # resize back
+                pred_disp = F.interpolate(pred_disp.unsqueeze(1), size=ori_size,
+                                        mode='bilinear',
+                                        align_corners=True).squeeze(1)  # [1, H, W]
+                pred_disp = pred_disp * ori_size[-1] / float(inference_size[-1])
 
         return pred_disp[0].cpu().numpy()
